@@ -2,41 +2,42 @@ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const http = require("http");
+const { Server } = require("socket.io");
+const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-/* ================= MongoDB ================= */
-
+/* ================= MongoDB Connection ================= */
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Connected"))
-  .catch(err => console.log(err));
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.error("❌ MongoDB Connection Error:", err));
 
 /* ================= Schemas ================= */
-
-// USERS → signup/login
 const User = mongoose.model("User", new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
   password: String
 }, { collection: "users" }));
 
-// FRIENDS → friend list
 const Friend = mongoose.model("Friend", new mongoose.Schema({
   userId: String,
   friendId: String
 }, { collection: "friends" }));
 
-// CHATS → messages
-const Chat = mongoose.model("Chat", new mongoose.Schema({
+const ChatSchema = new mongoose.Schema({
+  conversationId: String,
   sender: String,
   receiver: String,
   message: String,
   time: { type: Date, default: Date.now }
-}, { collection: "chats" }));
+}, { collection: "chats" });
 
-// CALL HISTORY → video calls
+ChatSchema.index({ conversationId: 1, time: -1 });
+const Chat = mongoose.model("Chat", ChatSchema);
+
 const Call = mongoose.model("Call", new mongoose.Schema({
   caller: String,
   receiver: String,
@@ -45,8 +46,7 @@ const Call = mongoose.model("Call", new mongoose.Schema({
   status: { type: String, default: "ongoing" }
 }, { collection: "calls" }));
 
-/* ================= AUTH ================= */
-
+/* ================= Auth Routes ================= */
 app.post("/signup", async (req, res) => {
   try {
     let { name, email, password } = req.body;
@@ -58,11 +58,10 @@ app.post("/signup", async (req, res) => {
     const user = await User.create({
       name: name.trim(),
       email,
-      password: password.trim(),
+      password: password.trim()
     });
 
     res.json({ message: "Signup success", userId: user._id });
-
   } catch {
     res.status(500).json({ error: "Server error" });
   }
@@ -78,15 +77,10 @@ app.post("/login", async (req, res) => {
 
   if (!user) return res.status(400).json({ error: "Invalid login" });
 
-  res.json({
-    message: "Login success",
-    userId: user._id,
-    name: user.name
-  });
+  res.json({ message: "Login success", userId: user._id, name: user.name });
 });
 
-/* ================= FRIENDS ================= */
-
+/* ================= Friend Routes ================= */
 app.post("/add-friend", async (req, res) => {
   try {
     const { userId, friendId } = req.body;
@@ -101,7 +95,6 @@ app.post("/add-friend", async (req, res) => {
     await Friend.create({ userId: friendId, friendId: userId });
 
     res.json({ message: "Friend added successfully" });
-
   } catch {
     res.status(500).json({ error: "Server error" });
   }
@@ -118,73 +111,44 @@ app.get("/friends/:userId", async (req, res) => {
     );
 
     res.json(friends);
-
   } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ================= AGORA TOKEN ================= */
-
-const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
-
-const APP_ID = "856700ed462044a1846e5f7379d2bcda";
-const APP_CERTIFICATE = "4c624013656c4516899b986bf9673f4f";
-
-app.get("/generate-token/:channel", (req, res) => {
-  const channelName = req.params.channel;
-  const uid = 0;
-  const role = RtcRole.PUBLISHER;
-  const expire = Math.floor(Date.now() / 1000) + 3600;
-
-  const token = RtcTokenBuilder.buildTokenWithUid(
-    APP_ID,
-    APP_CERTIFICATE,
-    channelName,
-    uid,
-    role,
-    expire
-  );
-
-  res.json({ token });
-});
-/* ================= CHATS ================= */
-
-app.post("/send-message", async (req, res) => {
+app.get("/search-user", async (req, res) => {
   try {
-    const { sender, receiver, message } = req.body;
-    const msg = await Chat.create({ sender, receiver, message });
-    res.json(msg);
+    const email = req.query.email?.trim().toLowerCase();
+    const user = await User.findOne({ email });
+
+    if (!user)
+      return res.status(404).json({ error: "User not found" });
+
+    res.json({ userId: user._id, name: user.name, email: user.email });
   } catch {
-    res.status(500).json({ error: "Message send failed" });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
+/* ================= Chat Routes ================= */
 app.get("/messages/:u1/:u2", async (req, res) => {
   try {
-    const { u1, u2 } = req.params;
-
-    const msgs = await Chat.find({
-      $or: [
-        { sender: u1, receiver: u2 },
-        { sender: u2, receiver: u1 }
-      ]
-    }).sort({ time: 1 });
-
+    const conversationId = [req.params.u1, req.params.u2].sort().join("_");
+    const msgs = await Chat.find({ conversationId }).sort({ time: 1 });
     res.json(msgs);
   } catch {
     res.status(500).json({ error: "Failed to load messages" });
   }
 });
 
-/* ================= CALL HISTORY ================= */
-
+/* ================= Call Routes ================= */
 app.get("/call-history/:userId", async (req, res) => {
   try {
-    const userId = req.params.userId;
-
     const calls = await Call.find({
-      $or: [{ caller: userId }, { receiver: userId }]
+      $or: [
+        { caller: req.params.userId },
+        { receiver: req.params.userId }
+      ]
     }).sort({ time: -1 });
 
     res.json(calls);
@@ -192,106 +156,80 @@ app.get("/call-history/:userId", async (req, res) => {
     res.status(500).json({ error: "Failed to load call history" });
   }
 });
-/* ================= SOCKET ================= */
 
-const http = require("http").createServer(app);
-const io = require("socket.io")(http, { cors: { origin: "*" } });
+/* ================= Agora Token ================= */
+app.get("/generate-token/:channel", (req, res) => {
+  const expire = Math.floor(Date.now() / 1000) + 3600;
 
-let onlineUsers = {};
+  const token = RtcTokenBuilder.buildTokenWithUid(
+    process.env.AGORA_APP_ID,
+    process.env.AGORA_CERT,
+    req.params.channel,
+    0,
+    RtcRole.PUBLISHER,
+    expire
+  );
 
-io.on("connection", (socket) => {
-
-  socket.on("register", (userId) => {
-    onlineUsers[userId] = socket.id;
-    socket.join(userId);              // 🔥 Added (personal room)
-    console.log("User online:", userId);
-  });
-
-  // 🔥 Added (join call room)
-  socket.on("join-call-room", (channel) => {
-    socket.join(channel);
-  });
-
-  socket.on("call-user", async ({ to, channel, from }) => {
-  console.log("CALL EVENT:", { from, to, channel });
-
-  const target = onlineUsers[to];
-  console.log("TARGET SOCKET:", target);   // 🔥 DEBUG
-
-  await Call.create({
-    caller: from,
-    receiver: to,
-    channel,
-    status: "ongoing"
-  });
-
-  if (target) {
-    io.to(target).emit("incoming-call", { from, channel });
-    console.log("CALL SENT");
-  } else {
-    console.log("USER OFFLINE / NOT REGISTERED");
-  }
+  res.json({ token });
 });
 
-  socket.on("end-call", async ({ channel }) => {
-    await Call.findOneAndUpdate(
-      { channel, status: { $ne: "ended" } },
-      { status: "ended" }
-    );
+/* ================= SOCKET.IO ================= */
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*" }
+});
 
-    // 🔥 Your existing logic
-    const users = channel.split("_");
-    users.forEach(userId => {
-      const target = onlineUsers[userId];
-      if (target) {
-        io.to(target).emit("call-ended");
-      }
-    });
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
 
-    // 🔥 EXTRA reliable broadcast
-    io.to(channel).emit("call-ended");
+  socket.on("register", (userId) => {
+    if (!userId) return;
 
-    console.log("Call ended:", channel);
+    const room = userId.toString();
+    socket.join(room);
+    socket.userId = room;
+
+    console.log("User joined room:", room);
+  });
+
+  socket.on("send-message", async (data) => {
+    try {
+      if (!data?.sender || !data?.receiver || !data?.message) return;
+
+      const sender = data.sender.toString();
+      const receiver = data.receiver.toString();
+      const conversationId = [sender, receiver].sort().join("_");
+
+      const msg = await Chat.create({
+        conversationId,
+        sender,
+        receiver,
+        message: data.message.trim()
+      });
+
+      console.log("Message stored & emitting...");
+
+      io.to(sender).emit("new-message", msg);
+      io.to(receiver).emit("new-message", msg);
+
+    } catch (err) {
+      console.error("Message Error:", err);
+    }
+  });
+
+  socket.on("call-user", async ({ to, from, channel }) => {
+    try {
+      await Call.create({ caller: from, receiver: to, channel });
+      io.to(to.toString()).emit("incoming-call", { from, channel });
+    } catch (err) {
+      console.error("Call Error:", err);
+    }
   });
 
   socket.on("disconnect", () => {
-    for (let id in onlineUsers) {
-      if (onlineUsers[id] === socket.id) {
-        delete onlineUsers[id];
-        console.log("User offline:", id);
-      }
-    }
+    console.log("Socket disconnected:", socket.id);
   });
 });
-/* ================= SEARCH USER BY EMAIL ================= */
-
-app.get("/search-user", async (req, res) => {
-  try {
-    const email = req.query.email?.trim().toLowerCase();
-
-    if (!email) {
-      return res.status(400).json({ error: "Email required" });
-    }
-
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    res.json({
-      userId: user._id,
-      name: user.name,
-      email: user.email
-    });
-
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-/* ================= START ================= */
 
 const PORT = process.env.PORT || 5000;
-http.listen(PORT, () => {
-  console.log(`Server + Socket running on ${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
