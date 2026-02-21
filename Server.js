@@ -188,14 +188,19 @@ app.get("/generate-token/:channel", (req, res) => {
 });
 
 /* ================= SOCKET.IO ================= */
+/* ================= SOCKET.IO ================= */
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*" }
 });
 
+/* Track active calls */
+const activeCalls = new Map(); // channel -> Set(userIds)
+
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
+  /* ========== REGISTER USER ROOM ========== */
   socket.on("register", (userId) => {
     if (!userId) return;
 
@@ -203,9 +208,10 @@ io.on("connection", (socket) => {
     socket.join(room);
     socket.userId = room;
 
-    console.log("User joined room:", room);
+    console.log("User joined personal room:", room);
   });
 
+  /* ========== CHAT MESSAGE ========== */
   socket.on("send-message", async (data) => {
     try {
       if (!data?.sender || !data?.receiver || !data?.message) return;
@@ -221,8 +227,6 @@ io.on("connection", (socket) => {
         message: data.message.trim()
       });
 
-      console.log("Message stored & emitting...");
-
       io.to(sender).emit("new-message", msg);
       io.to(receiver).emit("new-message", msg);
 
@@ -231,46 +235,82 @@ io.on("connection", (socket) => {
     }
   });
 
+  /* ========== CALL USER ========== */
   socket.on("call-user", async ({ to, from, channel }) => {
     try {
       await Call.create({ caller: from, receiver: to, channel });
+
       io.to(to.toString()).emit("incoming-call", { from, channel });
+
     } catch (err) {
       console.error("Call Error:", err);
     }
   });
-   socket.on("join-call-room", (channel) => {
-  if (!channel) return;
 
-  socket.join(channel);
+  /* ========== JOIN CALL ROOM ========== */
+  socket.on("join-call-room", (channel) => {
+    if (!channel) return;
 
-  console.log(`📞 ${socket.id} joined call room: ${channel}`);
+    socket.join(channel);
 
-  // 🔥 VERY IMPORTANT: Confirm join back to client
-  socket.emit("joined-call-room", channel);
-});
-socket.on("end-call", async ({ channel }) => {
-  if (!channel) return;
+    if (!activeCalls.has(channel)) {
+      activeCalls.set(channel, new Set());
+    }
 
-  console.log("📴 Ending call for channel:", channel);
+    activeCalls.get(channel).add(socket.id);
+    socket.callChannel = channel;
 
-  try {
-    // update DB (optional but good)
-    await Call.updateMany(
-      { channel, status: "ongoing" },
-      { $set: { status: "ended" } }
-    );
-  } catch (e) {
-    console.log("DB update fail (ok):", e.message);
-  }
+    console.log(`📞 ${socket.id} joined call room: ${channel}`);
 
-  // 🔥 notify ONLY users in that call
-  io.to(channel).emit("call-ended");
-});
-  socket.on("disconnect", () => {
+    socket.emit("joined-call-room");
+  });
+
+  /* ========== END CALL (BUTTON PRESS) ========== */
+  socket.on("end-call", async ({ channel }) => {
+    if (!channel) return;
+
+    console.log("📴 Ending call for channel:", channel);
+
+    try {
+      await Call.updateMany(
+        { channel, status: "ongoing" },
+        { $set: { status: "ended" } }
+      );
+    } catch {}
+
+    io.to(channel).emit("call-ended");
+
+    activeCalls.delete(channel);
+  });
+
+  /* ========== AUTO END WHEN USER DISCONNECTS ========== */
+  socket.on("disconnect", async () => {
     console.log("Socket disconnected:", socket.id);
+
+    const channel = socket.callChannel;
+    if (!channel) return;
+
+    const room = activeCalls.get(channel);
+    if (!room) return;
+
+    room.delete(socket.id);
+
+    // If only 0 or 1 left -> end call for everyone
+    if (room.size <= 1) {
+      console.log("📴 Auto ending call (user disconnected):", channel);
+
+      io.to(channel).emit("call-ended");
+
+      try {
+        await Call.updateMany(
+          { channel, status: "ongoing" },
+          { $set: { status: "ended" } }
+        );
+      } catch {}
+
+      activeCalls.delete(channel);
+    }
   });
 });
-
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
