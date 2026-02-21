@@ -160,15 +160,19 @@ app.get("/call-history/:userId", async (req, res) => {
 /* ================= Agora Token ================= */
 app.get("/generate-token/:channel", (req, res) => {
   try {
-    if (!process.env.AGORA_APP_ID || !process.env.AGORA_CERT) {
+    const appId = process.env.APP_ID;
+    const cert = process.env.APP_CERTIFICATE;
+
+    if (!appId || !cert) {
+      console.log("❌ Missing Agora ENV");
       return res.status(500).json({ error: "Agora env missing" });
     }
 
     const expire = Math.floor(Date.now() / 1000) + 3600;
 
     const token = RtcTokenBuilder.buildTokenWithUid(
-      process.env.AGORA_APP_ID,
-      process.env.AGORA_CERT,
+      appId,
+      cert,
       req.params.channel,
       0,
       RtcRole.PUBLISHER,
@@ -176,9 +180,10 @@ app.get("/generate-token/:channel", (req, res) => {
     );
 
     res.json({ token });
+
   } catch (err) {
     console.error("TOKEN ERROR:", err);
-    res.status(500).json({ error: "Token generation failed" });
+    res.status(500).json({ error: err.message });
   }
 });
 
