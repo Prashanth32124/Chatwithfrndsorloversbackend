@@ -241,8 +241,13 @@ io.on("connection", (socket) => {
   });
    socket.on("join-call-room", (channel) => {
   if (!channel) return;
+
   socket.join(channel);
-  console.log("User joined call room:", channel);
+
+  console.log(`📞 ${socket.id} joined call room: ${channel}`);
+
+  // 🔥 VERY IMPORTANT: Confirm join back to client
+  socket.emit("joined-call-room", channel);
 });
 socket.on("end-call", async ({ channel }) => {
   if (!channel) return;
