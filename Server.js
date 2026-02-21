@@ -148,7 +148,50 @@ app.get("/generate-token/:channel", (req, res) => {
 
   res.json({ token });
 });
+/* ================= CHATS ================= */
 
+app.post("/send-message", async (req, res) => {
+  try {
+    const { sender, receiver, message } = req.body;
+    const msg = await Chat.create({ sender, receiver, message });
+    res.json(msg);
+  } catch {
+    res.status(500).json({ error: "Message send failed" });
+  }
+});
+
+app.get("/messages/:u1/:u2", async (req, res) => {
+  try {
+    const { u1, u2 } = req.params;
+
+    const msgs = await Chat.find({
+      $or: [
+        { sender: u1, receiver: u2 },
+        { sender: u2, receiver: u1 }
+      ]
+    }).sort({ time: 1 });
+
+    res.json(msgs);
+  } catch {
+    res.status(500).json({ error: "Failed to load messages" });
+  }
+});
+
+/* ================= CALL HISTORY ================= */
+
+app.get("/call-history/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const calls = await Call.find({
+      $or: [{ caller: userId }, { receiver: userId }]
+    }).sort({ time: -1 });
+
+    res.json(calls);
+  } catch {
+    res.status(500).json({ error: "Failed to load call history" });
+  }
+});
 /* ================= SOCKET ================= */
 
 const http = require("http").createServer(app);
