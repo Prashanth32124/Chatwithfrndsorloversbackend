@@ -213,19 +213,25 @@ io.on("connection", (socket) => {
   });
 
   socket.on("call-user", async ({ to, channel, from }) => {
-    const target = onlineUsers[to];
+  console.log("CALL EVENT:", { from, to, channel });
 
-    await Call.create({
-      caller: from,
-      receiver: to,
-      channel,
-      status: "ongoing"
-    });
+  const target = onlineUsers[to];
+  console.log("TARGET SOCKET:", target);   // 🔥 DEBUG
 
-    if (target) {
-      io.to(target).emit("incoming-call", { from, channel });
-    }
+  await Call.create({
+    caller: from,
+    receiver: to,
+    channel,
+    status: "ongoing"
   });
+
+  if (target) {
+    io.to(target).emit("incoming-call", { from, channel });
+    console.log("CALL SENT");
+  } else {
+    console.log("USER OFFLINE / NOT REGISTERED");
+  }
+});
 
   socket.on("end-call", async ({ channel }) => {
     await Call.findOneAndUpdate(
