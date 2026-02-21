@@ -239,7 +239,29 @@ io.on("connection", (socket) => {
       console.error("Call Error:", err);
     }
   });
+   socket.on("join-call-room", (channel) => {
+  if (!channel) return;
+  socket.join(channel);
+  console.log("User joined call room:", channel);
+});
+socket.on("end-call", async ({ channel }) => {
+  if (!channel) return;
 
+  console.log("📴 Ending call for channel:", channel);
+
+  try {
+    // update DB (optional but good)
+    await Call.updateMany(
+      { channel, status: "ongoing" },
+      { $set: { status: "ended" } }
+    );
+  } catch (e) {
+    console.log("DB update fail (ok):", e.message);
+  }
+
+  // 🔥 notify ONLY users in that call
+  io.to(channel).emit("call-ended");
+});
   socket.on("disconnect", () => {
     console.log("Socket disconnected:", socket.id);
   });
