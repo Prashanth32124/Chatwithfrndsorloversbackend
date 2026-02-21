@@ -159,18 +159,27 @@ app.get("/call-history/:userId", async (req, res) => {
 
 /* ================= Agora Token ================= */
 app.get("/generate-token/:channel", (req, res) => {
-  const expire = Math.floor(Date.now() / 1000) + 3600;
+  try {
+    if (!process.env.AGORA_APP_ID || !process.env.AGORA_CERT) {
+      return res.status(500).json({ error: "Agora env missing" });
+    }
 
-  const token = RtcTokenBuilder.buildTokenWithUid(
-    process.env.AGORA_APP_ID,
-    process.env.AGORA_CERT,
-    req.params.channel,
-    0,
-    RtcRole.PUBLISHER,
-    expire
-  );
+    const expire = Math.floor(Date.now() / 1000) + 3600;
 
-  res.json({ token });
+    const token = RtcTokenBuilder.buildTokenWithUid(
+      process.env.AGORA_APP_ID,
+      process.env.AGORA_CERT,
+      req.params.channel,
+      0,
+      RtcRole.PUBLISHER,
+      expire
+    );
+
+    res.json({ token });
+  } catch (err) {
+    console.error("TOKEN ERROR:", err);
+    res.status(500).json({ error: "Token generation failed" });
+  }
 });
 
 /* ================= SOCKET.IO ================= */
